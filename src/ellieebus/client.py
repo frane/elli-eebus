@@ -181,7 +181,11 @@ class ElliEebus:
     def add_listener(self, listener: Listener) -> Callable[[], None]:
         """Called with a new :class:`ElliStatus` whenever the wallbox reports something."""
         self._listeners.append(listener)
-        return lambda: self._listeners.remove(listener)
+
+        def remove() -> None:
+            with contextlib.suppress(ValueError):
+                self._listeners.remove(listener)
+        return remove
 
     async def _dial_loop(self) -> None:
         delay = 5.0
