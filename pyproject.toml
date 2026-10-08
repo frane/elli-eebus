@@ -11,7 +11,7 @@ license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Frane Bandov" }]
 requires-python = ">=3.11"
-dependencies = ["pyeebus @ git+https://github.com/frane/pyeebus.git"]
+dependencies = ["pyeebus@https://github.com/frane/pyeebus/archive/00bc41d0226e5083c8ecaf5604890b41e431b1e7.zip"]
 keywords = ["elli", "wallbox", "ev-charger", "eebus", "home-assistant", "volkswagen"]
 classifiers = [
   "Development Status :: 3 - Alpha",
