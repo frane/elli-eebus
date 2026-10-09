@@ -198,7 +198,7 @@ class ElliEebus:
                 delay = 5.0
                 await conn.wait_closed()
             except RemoteAbortError:
-                _LOGGER.info("wallbox rejected us: pair %s (SKI %s) in its UI", "elli-eebus", self.our_ski)
+                _LOGGER.info("wallbox rejected us: pair %s (SKI %s) in its UI", self.service.device.brand, self.our_ski)
                 delay = 15.0
             except asyncio.CancelledError:
                 raise
