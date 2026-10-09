@@ -30,6 +30,7 @@ from pyeebus.usecases import (
     LPC,
     MPC,
     OPEV,
+    OSCEV,
     ClientFeature,
     DataNotAvailable,
     LoadLimit,
@@ -130,6 +131,11 @@ class ElliEebus:
         self._opev = OPEV(cem, self._on_event).setup()
         self._lpc = LPC(cem, self._on_event).setup()
         self._mpc = MPC(cem, self._on_event).setup()
+        # The Elli expects an energy manager to offer self-consumption (OSCEV) and cost-optimized
+        # charging (CEVC). Without them it logs 0x401029/0x40102A and refuses power limits below
+        # its minimum, so it can't be paused with a 0 W limit.
+        self._oscev = OSCEV(cem, self._on_event).setup()
+        cem.add_use_case("CEM", "coordinatedEvCharging", "1.0.1", [1, 2, 3, 4, 5, 6, 7, 8])
         self._listeners: list[Listener] = []
         self._connected = asyncio.Event()
         self._dialer: asyncio.Task | None = None
@@ -380,7 +386,7 @@ class ElliEebus:
     # --- control ------------------------------------------------------------------------------
 
     async def set_power_limit(self, watts: float, duration: float | None = None) -> None:
-        """Limit the charging power (W). With ``duration`` (s) the limit is lifted afterwards.
+        """Limit the charging power (W); 0 pauses charging. With ``duration`` (s) the limit is lifted afterwards.
 
         Elli firmware ignores limits that carry a duration, so the limit is sent
         without one and lifted by this client when the time is up (also after a

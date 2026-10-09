@@ -4,7 +4,7 @@ Control an Elli wallbox over **EEBUS** from Python: status, power limits, failsa
 
 [Deutsch](README.de.md) · Modbus instead of EEBUS: [elli-2-modbus](https://github.com/frane/elli-2-modbus) · Home Assistant: [ha-elli-2-modbus](https://github.com/frane/ha-elli-2-modbus)
 
-> **Status: early.** Tested against an Elli Charger 2 and against simulators. Nothing is released yet.
+> **Status: 0.1.0, early.** Tested with a real Elli Charger 2 (also in use behind [elli-eebus-proxy](https://github.com/frane/elli-eebus-proxy) with Solar Manager) and against simulators.
 
 ## Supported wallboxes
 
@@ -55,6 +55,8 @@ Found with recordings of an Elli Charger 2 (October 2026):
 
 - **Limits with a duration are ignored.** A power limit that carries a duration (`timePeriod`) gets no answer and is not applied. elli-eebus sends limits without a duration and lifts them itself when the time is up, also after a restart (the end time is kept in `state.json`).
 - **Lifting a limit only works with 0 W.** `isLimitActive: false` is rejected ("Write failed") unless the value is 0. elli-eebus always lifts limits that way.
+- **Pausing needs the EV charging services.** An active limit below the minimum charging power (e.g. 0 W to pause) is rejected ("Write failed") unless the energy manager announces self-consumption (OSCEV) and cost-optimized charging (CEVC). Without them the Elli also logs errors 0x401029 and 0x40102A. elli-eebus announces both, so `set_power_limit(0)` pauses charging.
+- **Bindings outlive the pairing.** After removing an energy manager in the Elli UI, the Elli keeps its binding to the power limit and refuses it to the next one ("Adding binding failed") until the Elli restarts. Keep elli-eebus' state directory: a new certificate is a new energy manager.
 
 If elli-eebus stops while a limit is active, the wallbox notices the missing heartbeat and switches to its failsafe limit (by default 22 kW, so no restriction) for the failsafe duration (at least 2 hours).
 
