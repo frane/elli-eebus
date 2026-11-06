@@ -196,10 +196,13 @@ async def test_first_generation_in_practice(tmp_path):
         await wait_for(lambda: evse.limits["obligation"] == [16, 16, 16])
         status = await wait_for(lambda: (s := elli.status()).current_limits == (16, 16, 16) and s)
         assert status.power_limit_active is False
+        assert status.charge_state == "active" and status.charging is False, "plugged in, no current yet"
+        assert status.heartbeat_ok is None, "no heartbeat data"
 
         evse.set_charging(16, 100)
         status = await wait_for(lambda: (s := elli.status()).currents == (16, 16, 16) and s)
         assert status.power == 3 * 16 * 230
+        assert status.charging is True
 
         await elli.set_power_limit(11000)  # 15.9 A per phase
         status = await wait_for(lambda: (s := elli.status()).power_limit_active and s)
@@ -207,6 +210,7 @@ async def test_first_generation_in_practice(tmp_path):
 
         evse.unplug()
         await wait_for(lambda: elli.status().vehicle_connected is False)
+        assert elli.status().charging is False
         await elli.set_current_limit(10)  # no vehicle: remembered
         evse.plug_in()
         _starts_at_minimum(evse)

@@ -78,6 +78,8 @@ class ElliStatus:
     max_current: float | None = None  # A per phase
     vehicle_connected: bool | None = None  # only the first generation reports the EV
     charge_state: str | None = None  # active, paused, finished, error, unplugged, unknown
+    # Current is flowing. "active" comes already while the car waits for authorization.
+    charging: bool | None = None
     heartbeat_ok: bool | None = None  # the wallbox is alive (EEBUS heartbeat)
 
 
@@ -369,8 +371,10 @@ class ElliEebus:
             values.update(min_power=rng[0], max_power=rng[1])
         if (rng := get(self._current_range, evse)) is not None:
             values.update(min_current=rng[0], max_current=rng[1])
-        values["heartbeat_ok"] = self._lpc.is_heartbeat_within(evse) if evse.feature(
-            "DeviceDiagnosis", Role.SERVER) else None
+        diagnosis = evse.feature("DeviceDiagnosis", Role.SERVER)
+        # The first generation serves the heartbeat function but never fills it: unknown.
+        values["heartbeat_ok"] = self._lpc.is_heartbeat_within(evse) if diagnosis is not None \
+            and (diagnosis.data.get("deviceDiagnosisHeartbeatData") or {}) else None
 
         if ev is not None:
             values["vehicle_connected"] = True
@@ -396,6 +400,12 @@ class ElliEebus:
                     lim.is_active and lim.value < high - 0.05 for lim, high in zip(lims, rng[1]))
         elif self.profile == "opev":
             values.update(vehicle_connected=False, charge_state="unplugged")
+        if values.get("vehicle_connected") is False:
+            values["charging"] = False
+        elif values.get("currents") is not None:
+            values["charging"] = max(values["currents"]) >= 1.0
+        elif values.get("vehicle_connected"):
+            values["charging"] = False  # no current reported (yet)
         if "power" not in values and values.get("currents"):
             # The first generation reports currents but no power (evcc computes it the same way).
             voltages = values.get("voltages") or ()
