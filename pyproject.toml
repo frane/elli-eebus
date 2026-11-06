@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "elli-eebus"
-version = "0.1.1"
+version = "0.1.2"
 description = "Elli Charger over EEBUS: status, power limits and measurements (Elli Charger 2 and first generation)"
 readme = "README.md"
 license = "MIT"

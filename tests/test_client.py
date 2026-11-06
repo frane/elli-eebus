@@ -7,9 +7,10 @@ import asyncio
 import pytest
 from pyeebus.ship import Identity
 from pyeebus.simulator import SimulatedEVSE
+from pyeebus.spine import Role
 from pyeebus.usecases import LPC, LoadLimit
 
-from ellieebus import ElliEebus
+from ellieebus import ElliEebus, ElliError
 from ellieebus.simulator import SimulatedElli
 
 NODE = {"announce": False, "discover": False, "host": "127.0.0.1"}
@@ -152,7 +153,71 @@ async def test_first_generation_current_limits(tmp_path):
         assert elli.status().energy_scope == "session"
         assert elli.status().currents == (8, 8, 8)
         await elli.clear_power_limit()
-        await wait_for(lambda: all(not lim.is_active for lim in elli._opev.load_control_limits(elli._ev())))
+        assert evse.limits["obligation"] == [16, 16, 16], "unrestricted = the maximum"
+        await wait_for(lambda: elli.status().power_limit_active is False)
     finally:
         await elli.stop()
         await evse.stop()
+
+
+def _without_power(evse: SimulatedEVSE) -> None:
+    """Like the first generation in ha-elli #3: currents per phase, but no power."""
+    f = evse.ev.feature("Measurement", Role.SERVER)
+    descs = f.data["measurementDescriptionListData"]["measurementDescriptionData"]
+    f.data["measurementDescriptionListData"]["measurementDescriptionData"] = [
+        d for d in descs if d["scopeType"] != "acPower"]
+    plain = evse._measurements
+    evse._measurements = lambda current, energy: [m for m in plain(current, energy) if not 4 <= m["measurementId"] <= 6]
+    f.data["measurementListData"] = {"measurementData": evse._measurements(0.0, 0.0)}
+
+
+def _starts_at_minimum(evse: SimulatedEVSE) -> None:
+    """After plug-in the first generation charges at 6 A until a limit is written."""
+    f = evse.ev.feature("LoadControl", Role.SERVER)
+    for item in f.data["loadControlLimitListData"]["loadControlLimitData"]:
+        if item["limitId"] <= 3:
+            item.update(isLimitActive=True, value={"number": 6, "scale": 0})
+    evse.limits["obligation"] = [6, 6, 6]
+
+
+async def test_first_generation_in_practice(tmp_path):
+    """ha-elli #3: power from the currents, the limit written on every plug-in, a limit
+    remembered while no vehicle is connected, and no failsafe."""
+    evse = SimulatedEVSE(Identity.create("gen1"), port=0, **NODE)
+    await evse.start()
+    elli = client(evse.service.ski, evse.service.node.port, tmp_path)
+    trust_each_other(evse.service, elli)
+    await elli.start()
+    try:
+        await elli.wait_connected(5)
+        evse.plug_in()
+        _without_power(evse)
+        _starts_at_minimum(evse)
+        await wait_for(lambda: evse.limits["obligation"] == [16, 16, 16])
+        status = await wait_for(lambda: (s := elli.status()).current_limits == (16, 16, 16) and s)
+        assert status.power_limit_active is False
+
+        evse.set_charging(16, 100)
+        status = await wait_for(lambda: (s := elli.status()).currents == (16, 16, 16) and s)
+        assert status.power == 3 * 16 * 230
+
+        await elli.set_power_limit(11000)  # 15.9 A per phase
+        status = await wait_for(lambda: (s := elli.status()).power_limit_active and s)
+        assert status.power_limit == pytest.approx(11000, abs=3 * 230)
+
+        evse.unplug()
+        await wait_for(lambda: elli.status().vehicle_connected is False)
+        await elli.set_current_limit(10)  # no vehicle: remembered
+        evse.plug_in()
+        _starts_at_minimum(evse)
+        await wait_for(lambda: evse.limits["obligation"] == [10, 10, 10])
+
+        with pytest.raises(ElliError, match="failsafe"):
+            await elli.set_failsafe(4200)
+    finally:
+        await elli.stop()
+        await evse.stop()
+
+    # the wanted limit survives a restart
+    again = client(evse.service.ski, evse.service.node.port, tmp_path)
+    assert again._state.current_limit == 10

@@ -12,6 +12,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -88,6 +89,9 @@ class _State:
     """Persisted between restarts (state.json)."""
 
     limit_until: float | None = None
+    # First generation: the current limit (A per phase) the user wants, None = unrestricted.
+    # Its limits live on the EV entity, which the wallbox recreates on every plug-in.
+    current_limit: float | None = None
     extra: dict[str, Any] = field(default_factory=dict)
 
 
@@ -141,6 +145,9 @@ class ElliEebus:
         self._dialer: asyncio.Task | None = None
         self._release: asyncio.Task | None = None
         self._state = self._load_state()
+        self._state_lock = threading.Lock()
+        self._reapply = False  # first generation: write the wanted limit once the EV is readable
+        self._reapply_task: asyncio.Task | None = None
         self._last_status: ElliStatus | None = None
         self.service.device.subscribe_events(self._on_spine_event)
         self.service.node.on_connected = self._wrap_connected(self.service.node.on_connected)
@@ -165,7 +172,7 @@ class ElliEebus:
             self._dialer = asyncio.create_task(self._dial_loop())
 
     async def stop(self) -> None:
-        for task in (self._dialer, self._release):
+        for task in (self._dialer, self._release, self._reapply_task):
             if task is not None:
                 task.cancel()
         await self.service.stop()
@@ -261,6 +268,10 @@ class ElliEebus:
                                                   for s in info.get("useCaseSupport") or [])
                 for info in device.use_cases()):
             return "opev"
+        if evse is not None:
+            # The EVSE's features arrive with it: no LoadControl there means the limits live
+            # on the EV entity, which only exists while a vehicle is plugged in (ha-elli #3).
+            return "opev"
         return None
 
     # --- status -------------------------------------------------------------------------------
@@ -279,6 +290,34 @@ class ElliEebus:
                           "electricalConnectionPermittedValueSetListData")
         elif event.type == EventType.DATA and event.function and event.function.startswith("electricalConnection"):
             self._notify()
+        if event.type == EventType.ENTITY and event.change == Change.ADD and event.entity is not None \
+                and event.entity.type == "EV":
+            self._reapply = True
+        if self._reapply and event.type == EventType.DATA and event.entity is not None \
+                and event.entity.type == "EV" and event.function in (
+                    "loadControlLimitListData", "electricalConnectionPermittedValueSetListData") \
+                and (self._reapply_task is None or self._reapply_task.done()):
+            self._reapply_task = asyncio.create_task(self._apply_current_limit())
+
+    async def _apply_current_limit(self) -> None:
+        """First generation: after a plug-in or reconnect the wallbox starts the EV at its
+        minimum current until an energy manager writes a limit (ha-elli #3). Write the
+        wanted limit, or the maximum (unrestricted)."""
+        ev = self._ev()
+        if ev is None or self.profile != "opev":
+            return
+        try:
+            _low, high, _default = self._opev.current_limits(ev)
+            self._opev.load_control_limits(ev)
+        except DataNotAvailable:
+            return  # not all read yet: the next data event tries again
+        self._reapply = False
+        wanted = self._state.current_limit
+        try:
+            await self._opev.write_load_control_limits(
+                ev, [PhaseLimit(p, wanted if wanted is not None else h) for p, h in zip("abc", high)])
+        except Exception as err:  # noqa: BLE001 - retried on the next plug-in
+            _LOGGER.warning("could not set the charging current after plug-in: %s", err)
 
     def _notify(self) -> None:
         status = self.status()
@@ -342,12 +381,27 @@ class ElliEebus:
                 values["power"] = sum(v)
             if (v := get(self._evcem.energy_charged, ev)) is not None and "energy" not in values:
                 values.update(energy=v, energy_scope="session")
-            if (lims := get(self._opev.load_control_limits, ev)) is not None:
+            lims = get(self._opev.load_control_limits, ev)
+            rng = get(self._opev.current_limits, ev)
+            if lims is not None:
                 values["current_limits"] = tuple(lim.value for lim in lims)
-            if (rng := get(self._opev.current_limits, ev)) is not None and "min_current" not in values:
+            if rng is not None and "min_current" not in values:
                 values.update(min_current=min(rng[0]), max_current=max(rng[1]))
+            if lims and rng is not None and "power_limit" not in values:
+                # First generation: the per phase current limit as power. An active limit at
+                # the maximum restricts nothing (that is how "unrestricted" is written).
+                amps = min(lim.value for lim in lims)
+                values["power_limit"] = amps * NOMINAL_VOLTAGE * len(lims)
+                values["power_limit_active"] = any(
+                    lim.is_active and lim.value < high - 0.05 for lim, high in zip(lims, rng[1]))
         elif self.profile == "opev":
             values.update(vehicle_connected=False, charge_state="unplugged")
+        if "power" not in values and values.get("currents"):
+            # The first generation reports currents but no power (evcc computes it the same way).
+            voltages = values.get("voltages") or ()
+            values["power"] = round(sum(
+                amps * (voltages[i] if i < len(voltages) and voltages[i] else NOMINAL_VOLTAGE)
+                for i, amps in enumerate(values["currents"])), 1)
         return ElliStatus(**values)
 
     def _parameters(self, evse: RemoteEntity) -> tuple[ClientFeature, list[dict], list[dict]]:
@@ -405,11 +459,14 @@ class ElliEebus:
         evse = self._require_evse()
         self._schedule_release(None)
         if self.profile == "opev":
+            self._state.current_limit = None
+            self._save_state()
             ev = self._ev()
             if ev is not None:
+                # Written as an active limit at the maximum: an inactive limit lets the first
+                # generation fall back to its minimum current (ha-elli #3).
                 _low, high, _default = self._opev.current_limits(ev)
-                await self._opev.write_load_control_limits(
-                    ev, [PhaseLimit(p, h, is_active=False) for p, h in zip("abc", high)])
+                await self._opev.write_load_control_limits(ev, [PhaseLimit(p, h) for p, h in zip("abc", high)])
             return
         # Elli firmware rejects isLimitActive=false unless the value is 0
         desc = self._lpc._limit_description(evse)
@@ -421,13 +478,17 @@ class ElliEebus:
     async def set_current_limit(self, amps: float, duration: float | None = None) -> None:
         """Limit the charging current per phase (A).
 
-        First generation: per phase current limits (OPEV), needs a connected EV.
+        First generation: per phase current limits (OPEV). Without a vehicle the limit is
+        remembered and written on the next plug-in.
         Elli Charger 2: converted to a power limit (A x 230 V x phases).
         """
         if self.profile == "opev":
+            self._state.current_limit = amps
+            self._save_state()  # applied again on every plug-in
             ev = self._ev()
             if ev is None:
-                raise ElliError("no vehicle connected")
+                self._schedule_release(duration)
+                return  # written when a vehicle is plugged in
             await self._opev.write_load_control_limits(ev, [PhaseLimit(p, amps) for p in "abc"])
             self._schedule_release(duration)
             return
@@ -436,6 +497,8 @@ class ElliEebus:
     async def set_failsafe(self, watts: float | None = None, duration: float | None = None) -> None:
         """Set the failsafe power limit (W) and/or its minimum duration (s, 2 to 24 h)."""
         evse = self._require_evse()
+        if self.profile == "opev":
+            raise ElliError("first-generation wallboxes have no failsafe limit")
         if watts is not None:
             await self._lpc.write_failsafe_consumption_limit(evse, watts)
         if duration is not None:
@@ -488,11 +551,20 @@ class ElliEebus:
         path = self.state_dir / "state.json"
         try:
             data = json.loads(path.read_text())
-            return _State(limit_until=data.get("limit_until"))
+            return _State(limit_until=data.get("limit_until"), current_limit=data.get("current_limit"))
         except (OSError, ValueError):
             return _State()
 
     def _save_state(self) -> None:
-        with contextlib.suppress(OSError):
+        text = json.dumps({"limit_until": self._state.limit_until, "current_limit": self._state.current_limit})
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self._write_state(text)
+        else:  # not on the event loop (Home Assistant flags blocking file access)
+            loop.run_in_executor(None, self._write_state, text)
+
+    def _write_state(self, text: str) -> None:
+        with contextlib.suppress(OSError), self._state_lock:
             self.state_dir.mkdir(parents=True, exist_ok=True)
-            (self.state_dir / "state.json").write_text(json.dumps({"limit_until": self._state.limit_until}))
+            (self.state_dir / "state.json").write_text(text)
