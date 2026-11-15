@@ -308,18 +308,35 @@ class ElliEebus:
         ev = self._ev()
         if ev is None or self.profile != "opev":
             return
+        wanted = self._state.current_limit
         try:
-            _low, high, _default = self._opev.current_limits(ev)
             self._opev.load_control_limits(ev)
+            high = self._known_max(ev)
         except DataNotAvailable:
             return  # not all read yet: the next data event tries again
+        if wanted is None and high is None:
+            return  # the maximum is not known (yet): leave the wallbox alone (ha-elli #4)
         self._reapply = False
-        wanted = self._state.current_limit
         try:
             await self._opev.write_load_control_limits(
                 ev, [PhaseLimit(p, wanted if wanted is not None else h) for p, h in zip("abc", high)])
         except Exception as err:  # noqa: BLE001 - retried on the next plug-in
             _LOGGER.warning("could not set the charging current after plug-in: %s", err)
+
+    def _known_max(self, ev) -> list[float] | None:
+        """The per phase maximum current, or None while the wallbox has not said it.
+
+        "Unrestricted" is written as an active limit at this maximum, so it must never be
+        guessed: the 1st gen Elli sends empty permitted values right after plug-in, and
+        writing those as 0 A stopped charging (ha-elli #4).
+        """
+        try:
+            _low, high, _default = self._opev.current_limits(ev)
+        except DataNotAvailable:
+            return None
+        if len(high) != 3 or min(high) < 6:  # below the IEC 61851 minimum: not a real maximum
+            return None
+        return high
 
     def _notify(self) -> None:
         status = self.status()
@@ -472,11 +489,12 @@ class ElliEebus:
             self._state.current_limit = None
             self._save_state()
             ev = self._ev()
-            if ev is not None:
+            if ev is not None and (high := self._known_max(ev)) is not None:
                 # Written as an active limit at the maximum: an inactive limit lets the first
                 # generation fall back to its minimum current (ha-elli #3).
-                _low, high, _default = self._opev.current_limits(ev)
                 await self._opev.write_load_control_limits(ev, [PhaseLimit(p, h) for p, h in zip("abc", high)])
+            elif ev is not None:
+                self._reapply = True  # written once the wallbox reports its maximum
             return
         # Elli firmware rejects isLimitActive=false unless the value is 0
         desc = self._lpc._limit_description(evse)

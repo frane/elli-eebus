@@ -225,3 +225,36 @@ async def test_first_generation_in_practice(tmp_path):
     # the wanted limit survives a restart
     again = client(evse.service.ski, evse.service.node.port, tmp_path)
     assert again._state.current_limit == 10
+
+
+async def test_first_generation_never_writes_an_unknown_maximum(tmp_path):
+    """ha-elli #4: right after plug-in some first-generation wallboxes send permitted
+    value sets without values. That is not a maximum of 0 A: nothing is written until the
+    wallbox reports one, and then the real maximum."""
+    evse = SimulatedEVSE(Identity.create("gen1-empty"), port=0, **NODE)
+    await evse.start()
+    elli = client(evse.service.ski, evse.service.node.port, tmp_path)
+    trust_each_other(evse.service, elli)
+    await elli.start()
+    try:
+        await elli.wait_connected(5)
+        evse.plug_in()
+        f = evse.ev.feature("ElectricalConnection", Role.SERVER)
+        complete = f.data["electricalConnectionPermittedValueSetListData"]
+        f.data["electricalConnectionPermittedValueSetListData"] = {
+            "electricalConnectionPermittedValueSetData": [
+                {"electricalConnectionId": 0, "parameterId": p} for p in range(4)]}
+        await wait_for(lambda: elli.status().vehicle_connected)
+        await asyncio.sleep(1.0)
+        assert evse.limits["obligation"] != [0, 0, 0], "no 0 A limit written"
+        assert elli.status().max_current is None, "unknown, not 0 A"
+
+        await elli.clear_power_limit()  # unrestricted, maximum still unknown: nothing written
+        assert evse.limits["obligation"] != [0, 0, 0]
+
+        _starts_at_minimum(evse)
+        f.set_data("electricalConnectionPermittedValueSetListData", complete)
+        await wait_for(lambda: evse.limits["obligation"] == [16, 16, 16])
+    finally:
+        await elli.stop()
+        await evse.stop()
