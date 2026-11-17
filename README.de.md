@@ -24,7 +24,7 @@ Die Elli Charger 2 meldet über EEBUS nicht, ob ein Auto angesteckt ist, und lie
 ## Kommandozeile
 
 ```bash
-pip install git+https://github.com/frane/elli-eebus.git    # oder: uvx --from git+https://github.com/frane/elli-eebus.git elli-eebus ...
+pip install elli-eebus    # oder: uvx elli-eebus ...
 
 elli-eebus discover
 elli-eebus status <SKI> --host 192.168.1.50 [--watch]

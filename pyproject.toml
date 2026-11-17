@@ -4,14 +4,14 @@ build-backend = "hatchling.build"
 
 [project]
 name = "elli-eebus"
-version = "0.1.4"
+version = "0.1.5"
 description = "Elli Charger over EEBUS: status, power limits and measurements (Elli Charger 2 and first generation)"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Frane Bandov" }]
 requires-python = ">=3.11"
-dependencies = ["pyeebus@https://github.com/frane/pyeebus/archive/94f2feee91a4075caf8af822853eae22ae1f974b.zip"]
+dependencies = ["pyeebus>=0.1.2,<0.2"]
 keywords = ["elli", "wallbox", "ev-charger", "eebus", "home-assistant", "volkswagen"]
 classifiers = [
   "Development Status :: 3 - Alpha",
@@ -31,9 +31,6 @@ elli-eebus = "ellieebus.cli:main"
 
 [project.optional-dependencies]
 test = ["pytest>=8", "pytest-asyncio>=0.23"]
-
-[tool.hatch.metadata]
-allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/ellieebus"]
