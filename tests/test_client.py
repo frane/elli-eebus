@@ -61,7 +61,7 @@ async def test_status_of_elli_charger_2(elli2):
     assert status.nominal_max_power == 11040
     assert (status.min_power, status.max_power) == (4140, 11040)
     assert (status.min_current, status.max_current) == (6, 16)
-    assert status.vehicle_connected is None  # the Elli Charger 2 does not report the car
+    assert status.vehicle_connected is None  # no car plugged in yet
 
 
 async def test_power_limit_with_duration_is_lifted_by_the_client(elli2):
@@ -258,3 +258,17 @@ async def test_first_generation_never_writes_an_unknown_maximum(tmp_path):
     finally:
         await elli.stop()
         await evse.stop()
+
+
+async def test_elli_charger_2_reports_the_car_only_while_plugged_in(elli2):
+    """The Elli Charger 2 shows an EV entity while a car is plugged in and removes it afterwards."""
+    sim, elli = elli2
+    await wait_for(lambda: elli.status().max_power is not None)
+    assert elli.status().vehicle_connected is None  # no car seen yet
+
+    ev = sim.device.add_entity("EV", (1, 1))
+    await wait_for(lambda: elli.status().vehicle_connected)
+
+    sim.device.remove_entity(ev)
+    status = await wait_for(lambda: (s := elli.status()).vehicle_connected is False and s)
+    assert status.charge_state == "unplugged" and status.charging is False

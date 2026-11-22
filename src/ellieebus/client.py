@@ -76,7 +76,9 @@ class ElliStatus:
     max_power: float | None = None  # W
     min_current: float | None = None  # A per phase
     max_current: float | None = None  # A per phase
-    vehicle_connected: bool | None = None  # only the first generation reports the EV
+    # The wallboxes report the EV only while a car is plugged in. None: no car seen yet on an
+    # Elli Charger 2 (it shows no EV without a car).
+    vehicle_connected: bool | None = None
     charge_state: str | None = None  # active, paused, finished, error, unplugged, unknown
     # Current is flowing. "active" comes already while the car waits for authorization.
     charging: bool | None = None
@@ -133,6 +135,7 @@ class ElliEebus:
         cem = self.service.entities[0]
         self._evsecc = EVSECC(cem, self._on_event).setup()
         self._evcc = EVCC(cem, self._on_event).setup()
+        self._ev_seen = False  # the wallbox has shown an EV entity: no EV = unplugged
         self._evcem = EVCEM(cem, self._on_event).setup()
         self._opev = OPEV(cem, self._on_event).setup()
         self._lpc = LPC(cem, self._on_event).setup()
@@ -295,6 +298,7 @@ class ElliEebus:
         if event.type == EventType.ENTITY and event.change == Change.ADD and event.entity is not None \
                 and event.entity.type == "EV":
             self._reapply = True
+            self._ev_seen = True
         if self._reapply and event.type == EventType.DATA and event.entity is not None \
                 and event.entity.type == "EV" and event.function in (
                     "loadControlLimitListData", "electricalConnectionPermittedValueSetListData") \
@@ -415,7 +419,7 @@ class ElliEebus:
                 values["power_limit"] = amps * NOMINAL_VOLTAGE * len(lims)
                 values["power_limit_active"] = any(
                     lim.is_active and lim.value < high - 0.05 for lim, high in zip(lims, rng[1]))
-        elif self.profile == "opev":
+        elif self.profile == "opev" or self._ev_seen:
             values.update(vehicle_connected=False, charge_state="unplugged")
         if values.get("vehicle_connected") is False:
             values["charging"] = False

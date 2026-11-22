@@ -10,10 +10,10 @@ Elli-Wallbox per **EEBUS** aus Python steuern: Status, Leistungslimit, Failsafe-
 
 | Wallbox | Was EEBUS bietet | elli-eebus |
 |---|---|---|
-| Elli Charger 2 (aktuelle Firmware) | Leistungslimit (LPC), Gesamtleistung (MPC), Failsafe-Einstellungen | ✅ mit echter Hardware getestet |
+| Elli Charger 2 (aktuelle Firmware) | Leistungslimit (LPC), Gesamtleistung (MPC), Failsafe-Einstellungen; solange ein Auto angesteckt ist auch das Fahrzeug: Stromlimit pro Phase (OPEV), Messwerte (EVCEM), Daten (EVCC) | ✅ mit echter Hardware getestet |
 | Elli Charger Connect/Pro (erste Generation) | Stromlimit pro Phase (OPEV), Fahrzeug-Messwerte (EVCEM), Fahrzeugdaten (EVCC) | ✅ nur mit Simulatoren getestet |
 
-Die Elli Charger 2 meldet über EEBUS nicht, ob ein Auto angesteckt ist, und liefert weder Ströme pro Phase noch einen Energiezähler. Dafür gibt es Modbus ([elli-2-modbus](https://github.com/frane/elli-2-modbus)).
+Die Elli Charger 2 meldet über EEBUS das Auto, die Ströme pro Phase und die geladene Energie nur, solange ein Auto angesteckt ist, und keinen Energiezähler. Wer das immer braucht: Modbus ([elli-2-modbus](https://github.com/frane/elli-2-modbus)).
 
 ## Koppeln
 
